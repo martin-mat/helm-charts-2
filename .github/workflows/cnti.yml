@@ -9,7 +9,7 @@ on:
     inputs:
       suite_url:
         description: cnti-testsuite binary to run (URL)
-        default: https://github.com/lfn-cnti/testsuite/releases/download/v2.3.0/cnti-testsuite
+        default: https://github.com/lfn-cnti/testsuite/releases/download/v2.3.0/cnti-testsuite-v2.3.0.tar.gz
       nfs:
         description: space-separated NFs, empty for all
         default: ""
@@ -32,7 +32,7 @@ jobs:
       matrix:
         nf: ${{ fromJson(needs.plan.outputs.nfs) }}
     env:
-      SUITE_URL: ${{ github.event.inputs.suite_url || 'https://github.com/lfn-cnti/testsuite/releases/download/v2.3.0/cnti-testsuite' }}
+      SUITE_URL: ${{ github.event.inputs.suite_url || 'https://github.com/lfn-cnti/testsuite/releases/download/v2.3.0/cnti-testsuite-v2.3.0.tar.gz' }}
     steps:
     - uses: actions/checkout@v4
     - name: Core charts (openairinterface/orchestration)
@@ -53,7 +53,13 @@ jobs:
         kubectl get nodes -o wide
     - name: Get the suite
       run: |
-        curl -fsSL -o cnti-testsuite "$SUITE_URL"
+        # A release asset is a tarball holding the binary; a build is the binary itself.
+        curl -fsSL -o suite.dl "$SUITE_URL"
+        if tar -tzf suite.dl >/dev/null 2>&1; then
+          tar -xzf suite.dl && mv "$(tar -tzf suite.dl | grep -E '(^|/)cnti-testsuite$' | head -n 1)" cnti-testsuite
+        else
+          mv suite.dl cnti-testsuite
+        fi
         chmod +x cnti-testsuite
         ./cnti-testsuite version
     - name: Run
