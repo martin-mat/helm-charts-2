@@ -1,0 +1,74 @@
+# Fork-only: the CNTi Test Suite run of lfn-cnti/README.md on GitHub-hosted
+# runners, one minikube cluster (2 nodes, containerd) per network function.
+# Not meant for upstream.
+name: CNTi (fork)
+on:
+  push:
+    branches: [cnti, cnti-*]
+  workflow_dispatch:
+    inputs:
+      suite_url:
+        description: cnti-testsuite binary to run (URL)
+        default: https://github.com/lfn-cnti/testsuite/releases/download/v2.3.0/cnti-testsuite
+      nfs:
+        description: space-separated NFs, empty for all
+        default: ""
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      nfs: ${{ steps.set.outputs.nfs }}
+    steps:
+    - id: set
+      run: |
+        nfs="${{ github.event.inputs.nfs }}"
+        [ -n "$nfs" ] || nfs="duranta-oai-gnb duranta-oai-cu duranta-oai-du duranta-oai-nr-ue duranta-oai-cu-cp duranta-oai-cu-up duranta-flexric"
+        echo "nfs=$(echo $nfs | tr ' ' '\n' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+  cnti:
+    needs: plan
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        nf: ${{ fromJson(needs.plan.outputs.nfs) }}
+    env:
+      SUITE_URL: ${{ github.event.inputs.suite_url || 'https://github.com/lfn-cnti/testsuite/releases/download/v2.3.0/cnti-testsuite' }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Core charts (openairinterface/orchestration)
+      uses: actions/checkout@v4
+      with:
+        repository: openairinterface/orchestration
+        ref: removing-ran-e2e-charts
+        path: orchestration
+    - name: Install minikube
+      run: |
+        curl -fsSL -o minikube https://storage.googleapis.com/minikube/releases/v1.37.0/minikube-linux-amd64
+        sudo install minikube /usr/local/bin/minikube
+        minikube version; kubectl version --client; helm version
+    - name: Create the cluster (2 nodes, containerd)
+      run: |
+        NODES=2 CPUS=2 MEMORY=6G CONTAINER_RUNTIME=containerd ./ci-scripts/create-cluster.sh
+        minikube addons disable storage-provisioner
+        kubectl get nodes -o wide
+    - name: Get the suite
+      run: |
+        curl -fsSL -o cnti-testsuite "$SUITE_URL"
+        chmod +x cnti-testsuite
+        ./cnti-testsuite version
+    - name: Run
+      run: |
+        CNTI=$PWD/cnti-testsuite CORE_CHART=$PWD/orchestration/charts/oai-5g-basic ./lfn-cnti/runCNTI.sh ${{ matrix.nf }}
+        echo "## ${{ matrix.nf }}" >> "$GITHUB_STEP_SUMMARY"
+        grep -h -E "PASSED|FAILED|SKIPPED|N/A|ERROR|Cert:" lfn-cnti/${{ matrix.nf }}/results/cert.log >> "$GITHUB_STEP_SUMMARY" || true
+    - name: Diagnostics on failure
+      if: ${{ failure() }}
+      run: |
+        kubectl get pods -A -o wide || true
+        kubectl get events -A --sort-by=.lastTimestamp | tail -40 || true
+    - uses: actions/upload-artifact@v4
+      if: ${{ always() }}
+      with:
+        name: results-${{ matrix.nf }}
+        path: lfn-cnti/${{ matrix.nf }}/results
+        if-no-files-found: ignore
