@@ -48,7 +48,11 @@ jobs:
         minikube version; kubectl version --client; helm version
     - name: Create the cluster (2 nodes, containerd)
       run: |
-        NODES=2 CPUS=2 MEMORY=6G CONTAINER_RUNTIME=containerd ./ci-scripts/create-cluster.sh
+        # As ci-scripts/create-cluster.sh does for the suite, without Multus and
+        # MetalLB (the CNTi configurations use neither, and the script's Multus
+        # test pod times out on a GitHub runner), and sized for the runner.
+        minikube start --driver=docker --container-runtime=containerd --nodes=2 --cni=kindnet \
+          --extra-config=kubeadm.pod-network-cidr=10.244.0.0/16 --cpus=2 --memory=6g --wait=all
         minikube addons disable storage-provisioner
         kubectl get nodes -o wide
     - name: Get the suite
@@ -56,7 +60,9 @@ jobs:
         # A release asset is a tarball holding the binary; a build is the binary itself.
         curl -fsSL -o suite.dl "$SUITE_URL"
         if tar -tzf suite.dl >/dev/null 2>&1; then
-          tar -xzf suite.dl && mv "$(tar -tzf suite.dl | grep -E '(^|/)cnti-testsuite$' | head -n 1)" cnti-testsuite
+          tar -xzf suite.dl
+          inner="$(tar -tzf suite.dl | grep -E '(^|/)cnti-testsuite$' | head -n 1)"
+          [ "$inner" = "cnti-testsuite" ] || [ "$inner" = "./cnti-testsuite" ] || mv "$inner" cnti-testsuite
         else
           mv suite.dl cnti-testsuite
         fi
