@@ -68,8 +68,26 @@ jobs:
         fi
         chmod +x cnti-testsuite
         ./cnti-testsuite version
+    - name: Core peer
+      # Test infrastructure for the RAN NFs, not the CNF under test. MySQL gets
+      # time for its first start: on a runner its initialization outlasts the
+      # chart's liveness probe (50 s + 3 x 15 s), which kills it mid-way and
+      # leaves it crash-looping.
+      if: ${{ matrix.nf != 'duranta-flexric' }}
+      run: |
+        helm dependency update orchestration/charts/oai-5g-basic >/dev/null
+        if ! helm install basic orchestration/charts/oai-5g-basic -n oai-core --create-namespace --wait --timeout 15m \
+             --set mysql.livenessProbe.initialDelaySeconds=300; then
+          kubectl -n oai-core get pods -o wide
+          for p in $(kubectl -n oai-core get pods -o name | grep mysql); do kubectl -n oai-core logs "$p" --previous --tail=80 || kubectl -n oai-core logs "$p" --tail=80; done
+          exit 1
+        fi
+        kubectl -n oai-core get pods -o wide
     - name: Run
       run: |
+        # The repository carries the maintainers' results; start from none, so
+        # the summary shows only this run's.
+        rm -rf lfn-cnti/*/results
         CNTI=$PWD/cnti-testsuite CORE_CHART=$PWD/orchestration/charts/oai-5g-basic ./lfn-cnti/runCNTI.sh ${{ matrix.nf }}
         echo "## ${{ matrix.nf }}" >> "$GITHUB_STEP_SUMMARY"
         grep -h -E "PASSED|FAILED|SKIPPED|N/A|ERROR|Cert:" lfn-cnti/${{ matrix.nf }}/results/cert.log >> "$GITHUB_STEP_SUMMARY" || true
