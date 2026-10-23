@@ -69,15 +69,25 @@ jobs:
         chmod +x cnti-testsuite
         ./cnti-testsuite version
     - name: Core peer
-      # Test infrastructure for the RAN NFs, not the CNF under test. MySQL gets
-      # time for its first start: on a runner its initialization outlasts the
-      # chart's liveness probe (50 s + 3 x 15 s), which kills it mid-way and
-      # leaves it crash-looping.
+      # Test infrastructure for the RAN NFs, not the CNF under test.
       if: ${{ matrix.nf != 'duranta-flexric' }}
       run: |
         helm dependency update orchestration/charts/oai-5g-basic >/dev/null
+        # On this runner mysqld reads no option file and listens on its built-in
+        # socket, /var/lib/mysql/mysql.sock, while the chart's probe (mysqladmin,
+        # which does read /etc/my.cnf) looks at /var/run/mysqld/mysqld.sock. A
+        # [client] file in conf.d points the probe at the built-in path, which
+        # the image's entrypoint also symlinks when the server does read its
+        # config. Peer only; the CNF under test is not changed.
+        cat > /tmp/core-peer.yaml <<'VALUES'
+        mysql:
+          configurationFiles:
+            client.cnf: |-
+              [client]
+              socket=/var/lib/mysql/mysql.sock
+        VALUES
         if ! helm install basic orchestration/charts/oai-5g-basic -n oai-core --create-namespace --wait --timeout 15m \
-             --set mysql.livenessProbe.initialDelaySeconds=300; then
+             -f /tmp/core-peer.yaml; then
           kubectl -n oai-core get pods -o wide
           for p in $(kubectl -n oai-core get pods -o name | grep mysql); do kubectl -n oai-core logs "$p" --previous --tail=80 || kubectl -n oai-core logs "$p" --tail=80; done
           exit 1
