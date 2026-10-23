@@ -150,6 +150,6 @@ readinessProbe: true   # nr-cuup is running
 livenessProbe: true
 
 # Scheduling options
-terminationGracePeriodSeconds: 5
+terminationGracePeriodSeconds: 30
 nodeSelector: {}
 nodeName:

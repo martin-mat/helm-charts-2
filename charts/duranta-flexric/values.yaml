@@ -102,6 +102,6 @@ xappDb:
   accessMode: ReadWriteOnce
 
 # Scheduling options
-terminationGracePeriodSeconds: 5
+terminationGracePeriodSeconds: 30
 nodeSelector: {}
 nodeName:

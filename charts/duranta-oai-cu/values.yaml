@@ -153,6 +153,6 @@ readinessProbe: true   # nr-softmodem is running
 livenessProbe: true
 
 # Scheduling options
-terminationGracePeriodSeconds: 5
+terminationGracePeriodSeconds: 30
 nodeSelector: {}
 nodeName:
