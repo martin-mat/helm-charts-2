@@ -1,0 +1,79 @@
+# Fork-only experiment: does the OAI core peer (MySQL 9) install on a kind
+# cluster, where it never became Ready under minikube's docker driver on
+# ubuntu-24.04? The core goes in without the MySQL socket workaround. Then
+# testsuite-action runs the CNF on the same cluster. Not meant for upstream.
+name: CNTi on kind (fork experiment)
+on:
+  push:
+    branches: [cnti-kind]
+  workflow_dispatch:
+jobs:
+  cnti:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-22.04]
+        nf: [duranta-oai-gnb, duranta-flexric]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Core charts (openairinterface/orchestration)
+        if: matrix.nf != 'duranta-flexric'
+        uses: actions/checkout@v4
+        with:
+          repository: openairinterface/orchestration
+          ref: removing-ran-e2e-charts
+          path: orchestration
+          persist-credentials: false
+      - name: Platform
+        run: |
+          uname -r; docker info --format 'docker storage driver: {{.Driver}}'
+      # As the action creates it (same kind-action pin, one control plane and two
+      # workers), but before the peer, which must exist before the suite runs.
+      - name: Write the kind config
+        run: |
+          cat > "$RUNNER_TEMP/kind.yaml" <<'KIND'
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+            - role: control-plane
+            - role: worker
+            - role: worker
+          KIND
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          cluster_name: cnti-testsuite
+          config: ${{ runner.temp }}/kind.yaml
+      - name: Core peer, without the MySQL workaround
+        if: matrix.nf != 'duranta-flexric'
+        run: |
+          set -uo pipefail
+          helm dependency update orchestration/charts/oai-5g-basic >/dev/null
+          start=$(date +%s)
+          if helm install basic orchestration/charts/oai-5g-basic -n oai-core --create-namespace --wait --timeout 15m; then
+            echo "CORE PEER READY on kind after $(( $(date +%s) - start ))s"
+            kubectl -n oai-core get pods -o wide
+          else
+            echo "CORE PEER NOT READY on kind after $(( $(date +%s) - start ))s"
+            kubectl -n oai-core get pods -o wide
+            for p in $(kubectl -n oai-core get pods -o name | grep mysql); do
+              kubectl -n oai-core describe "$p" | tail -25
+              kubectl -n oai-core logs "$p" --tail=60
+            done
+            exit 1
+          fi
+      - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
+        with:
+          version: v2.4.1
+          cnf_config: lfn-cnti/${{ matrix.nf }}/cnti-testsuite.yaml
+          create_kind_cluster: false
+          install_timeout: 900
+          tests: cert
+          # As lfn-cnti/runCNTI.sh: a RAN function is one node with its own
+          # identity, so extra replicas are rejected by its peers.
+          extra_args: ${{ matrix.nf != 'duranta-flexric' && '--skip increase_decrease_capacity' || '' }}
+          artifact_name: results-${{ matrix.runner }}-${{ matrix.nf }}
+          fail_on_failure: "false"
