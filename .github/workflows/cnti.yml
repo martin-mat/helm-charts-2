@@ -131,7 +131,7 @@ jobs:
   # read-only token. The action publishes the badges only from the default
   # branch, so nothing is published here.
   essential-pr:
-    if: github.repository == 'duranta-project/helm-charts' && (github.event_name == 'pull_request' || github.ref != 'refs/heads/main')
+    if: (github.repository == 'duranta-project/helm-charts' || github.repository == 'martin-mat/helm-charts-2') && (github.event_name == 'pull_request' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
