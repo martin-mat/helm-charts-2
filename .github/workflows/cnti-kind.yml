@@ -1,38 +1,39 @@
-# Fork-only experiment: does the OAI core peer (MySQL 9) install on a kind
-# cluster, where it never became Ready under minikube's docker driver on
-# ubuntu-24.04? The core goes in without the MySQL socket workaround. Then
-# testsuite-action runs the CNF on the same cluster. Not meant for upstream.
+# Fork-only experiment: is the runner's AppArmor profile for /usr/sbin/mysqld
+# what keeps MySQL 9 (the OAI core peer) from reading its own config on kind?
+# Two jobs, the same kind cluster and the core without any workaround: one with
+# the profile loaded, one with it unloaded. Not meant for upstream.
 name: CNTi on kind (fork experiment)
 on:
   push:
     branches: [cnti-kind]
   workflow_dispatch:
 jobs:
-  cnti:
+  apparmor:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, ubuntu-22.04]
-        nf: [duranta-oai-gnb, duranta-flexric]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+        profile: [kept, unloaded]
+    name: mysqld profile ${{ matrix.profile }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: Core charts (openairinterface/orchestration)
-        if: matrix.nf != 'duranta-flexric'
         uses: actions/checkout@v4
         with:
           repository: openairinterface/orchestration
           ref: removing-ran-e2e-charts
           path: orchestration
           persist-credentials: false
-      - name: Platform
+      - name: AppArmor on the runner
         run: |
-          uname -r; docker info --format 'docker storage driver: {{.Driver}}'
-      # As the action creates it (same kind-action pin, one control plane and two
-      # workers), but before the peer, which must exist before the suite runs.
+          uname -r
+          ls -l /etc/apparmor.d/ | grep -i mysql || echo "no mysql profile file"
+          sudo aa-status 2>/dev/null | grep -i -E 'mysql|profiles are loaded' || true
+      - name: Unload the mysqld profile
+        if: matrix.profile == 'unloaded'
+        run: |
+          sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld
+          sudo aa-status 2>/dev/null | grep -i mysql || echo "mysqld profile no longer loaded"
       - name: Write the kind config
         run: |
           cat > "$RUNNER_TEMP/kind.yaml" <<'KIND'
@@ -47,33 +48,21 @@ jobs:
         with:
           cluster_name: cnti-testsuite
           config: ${{ runner.temp }}/kind.yaml
-      - name: Core peer, without the MySQL workaround
-        if: matrix.nf != 'duranta-flexric'
+      - name: Core peer, without any workaround
         run: |
           set -uo pipefail
           helm dependency update orchestration/charts/oai-5g-basic >/dev/null
           start=$(date +%s)
-          if helm install basic orchestration/charts/oai-5g-basic -n oai-core --create-namespace --wait --timeout 15m; then
-            echo "CORE PEER READY on kind after $(( $(date +%s) - start ))s"
-            kubectl -n oai-core get pods -o wide
+          if helm install basic orchestration/charts/oai-5g-basic -n oai-core --create-namespace --wait --timeout 12m; then
+            echo "CORE PEER READY (profile ${{ matrix.profile }}) after $(( $(date +%s) - start ))s"
           else
-            echo "CORE PEER NOT READY on kind after $(( $(date +%s) - start ))s"
-            kubectl -n oai-core get pods -o wide
-            for p in $(kubectl -n oai-core get pods -o name | grep mysql); do
-              kubectl -n oai-core describe "$p" | tail -25
-              kubectl -n oai-core logs "$p" --tail=60
-            done
-            exit 1
+            echo "CORE PEER NOT READY (profile ${{ matrix.profile }}) after $(( $(date +%s) - start ))s"
           fi
-      - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
-        with:
-          version: v2.4.1
-          cnf_config: lfn-cnti/${{ matrix.nf }}/cnti-testsuite.yaml
-          create_kind_cluster: false
-          install_timeout: 900
-          tests: cert
-          # As lfn-cnti/runCNTI.sh: a RAN function is one node with its own
-          # identity, so extra replicas are rejected by its peers.
-          extra_args: ${{ matrix.nf != 'duranta-flexric' && '--skip increase_decrease_capacity' || '' }}
-          artifact_name: results-${{ matrix.runner }}-${{ matrix.nf }}
-          fail_on_failure: "false"
+          kubectl -n oai-core get pods -o wide
+          p=$(kubectl -n oai-core get pods -o name | grep mysql | head -1)
+          kubectl -n oai-core logs "$p" --tail=40 | grep -E 'ready for connections|errmsg|defaults file|ERROR' || true
+      - name: AppArmor denials in the kernel log
+        if: always()
+        run: |
+          sudo dmesg | grep -i 'apparmor="DENIED"' | grep -i mysql | sed -E 's/.*(apparmor="DENIED".*)/\1/' | cut -c1-260 | sort | uniq -c | sort -rn | head -20 || true
+          echo "DENIALS for mysqld: $(sudo dmesg | grep -i 'apparmor="DENIED"' | grep -ci mysqld)"
