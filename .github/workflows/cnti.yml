@@ -36,7 +36,8 @@ jobs:
     strategy: &nfs
       fail-fast: false
       matrix:
-        nf: [duranta-oai-gnb, duranta-oai-cu, duranta-oai-du, duranta-oai-nr-ue, duranta-oai-cu-cp, duranta-oai-cu-up, duranta-flexric]
+        nf: [duranta-oai-du, duranta-oai-cu-cp, duranta-oai-gnb]
+        attempt: [1, 2, 3]
     env: &env
       CORE_NS: oai-core
       DEPS_NS: oai-cnti-deps
@@ -102,6 +103,8 @@ jobs:
           esac
           kubectl get pods -n "$CORE_NS"; kubectl get pods -n "$DEPS_NS" 2>/dev/null || true
 
+      - name: Start the SIGTERM watcher (experiment)
+        run: sudo -E nohup bash lfn-cnti/sigterm-watch.sh > "$RUNNER_TEMP/watch.log" 2>&1 &
       - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
         with:
           version: v2.4.1
@@ -109,12 +112,16 @@ jobs:
           create_kind_cluster: false
           install_timeout: 900
           tests: cert
-          artifact_name: cnti-${{ matrix.nf }}
+          artifact_name: cnti-${{ matrix.nf }}-${{ matrix.attempt }}
           badge_branch: badges
           badge_name: ${{ matrix.nf }}
           # Known results (lfn-cnti/<nf>/expected.yaml): a test whose result
           # changes is reported in the job summary and as a warning.
           expected_results: lfn-cnti/${{ matrix.nf }}/expected.yaml
+
+      - name: SIGTERM watcher log (experiment)
+        if: always()
+        run: sleep 15; cat "$RUNNER_TEMP/watch.log"
 
       - name: Diagnostics
         if: failure()
