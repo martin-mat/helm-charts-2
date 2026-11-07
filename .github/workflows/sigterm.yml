@@ -1,0 +1,93 @@
+# Fork-only experiment: where does nr-softmodem hang when it does not exit on
+# SIGTERM? Each pod of the NF is deleted with a 60 s grace period, as the
+# sig_term_handled test does with its 5 s; when nr-softmodem is still alive
+# after 10 s, its threads (state, policy, wait channel, gdb backtrace) and
+# the container's last log lines are recorded. Not meant for upstream.
+name: SIGTERM experiment (fork)
+on:
+  push:
+    branches: [ci/sigterm-experiment]
+  workflow_dispatch:
+jobs:
+  sigterm:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - nf: duranta-oai-cu-cp
+            values: --set config.amfHost=oai-amf.oai-core.svc.cluster.local
+          - nf: duranta-oai-du
+            values: --set config.cuHost=oai-cu.oai-cnti-deps.svc.cluster.local
+            peer: duranta-oai-cu
+    name: ${{ matrix.nf }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      AMF: oai-amf.oai-core.svc.cluster.local
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: openairinterface/orchestration
+          ref: 7925f939ea36a3c4c1df5525f3718ce8470f6b3f
+          path: orchestration
+          persist-credentials: false
+      - name: Runner setup
+        run: |
+          sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld || true
+          sudo apt-get install -y -qq gdb >/dev/null
+          sudo sysctl -w kernel.yama.ptrace_scope=0 >/dev/null
+          gdb --version | head -1
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          cluster_name: cnti-testsuite
+          config: lfn-cnti/kind.yaml
+      - name: Peers and the NF
+        run: |
+          set -euo pipefail
+          helm dependency update orchestration/oai-5g-core/oai-5g-basic >/dev/null
+          helm install basic orchestration/oai-5g-core/oai-5g-basic -n oai-core --create-namespace --wait --timeout 10m
+          if [ -n "${{ matrix.peer }}" ]; then
+            helm install cu charts/${{ matrix.peer }} -n oai-cnti-deps --create-namespace --wait --timeout 10m --set config.amfHost=$AMF
+          fi
+          helm install ${{ matrix.nf }} charts/${{ matrix.nf }} -n oai-cnti --create-namespace --wait --timeout 10m ${{ matrix.values }}
+          kubectl get pods -A -o wide | grep -E 'oai-cnti|NAME'
+      - name: Stop it ten times
+        env:
+          NF: ${{ matrix.nf }}
+        run: |
+          set -uo pipefail
+          hostpid() { # pod uid -> host pid of its nr-softmodem
+            local uid=${1//-/_} p
+            for p in $(pgrep -x nr-softmodem); do grep -q "$uid\|$1" /proc/$p/cgroup 2>/dev/null && { echo $p; return; }; done
+          }
+          hung=0
+          for i in $(seq 10); do
+            kubectl -n oai-cnti wait pod -l app=$NF --for=condition=Ready --timeout=300s >/dev/null || { echo "iteration $i: no Ready pod"; continue; }
+            sleep 20
+            pod=$(kubectl -n oai-cnti get pod -l app=$NF --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+            uid=$(kubectl -n oai-cnti get pod $pod -o jsonpath='{.metadata.uid}')
+            p=$(hostpid $uid)
+            [ -n "$p" ] || { echo "iteration $i: no nr-softmodem for $pod"; continue; }
+            t0=$(date +%s.%N)
+            kubectl -n oai-cnti delete pod $pod --grace-period=60 --wait=false >/dev/null
+            gone=""
+            for k in $(seq 100); do [ -d /proc/$p ] || { gone=$(echo "$(date +%s.%N) - $t0" | bc); break; }; sleep 0.1; done
+            if [ -n "$gone" ]; then echo "iteration $i: $pod nr-softmodem $p exited after ${gone}s"; continue; fi
+            hung=$((hung+1))
+            echo "::group::iteration $i: $pod nr-softmodem $p STILL ALIVE 10 s after SIGTERM"
+            echo "--- threads: tid comm state policy rtprio wchan"
+            for t in /proc/$p/task/*; do
+              tid=${t##*/}
+              printf '%s %s %s %s %s\n' "$tid" "$(cat $t/comm)" "$(awk '{print $3}' $t/stat)" "$(chrt -p $tid 2>/dev/null | sed -n 's/.*policy: //p;s/.*priority: /prio=/p' | tr '\n' ' ')" "$(sudo cat $t/wchan 2>/dev/null)"
+            done
+            echo "--- gdb"
+            sudo timeout 60 gdb -p $p -batch -ex 'set pagination off' -ex 'info threads' -ex 'thread apply all bt 12' 2>&1 | grep -v '^\[New LWP\|^warning' | head -400
+            echo "--- container log, last 40 lines"
+            kubectl -n oai-cnti logs $pod --tail=40 2>&1 | cut -c1-200
+            echo "::endgroup::"
+            for k in $(seq 70); do [ -d /proc/$p ] || break; sleep 1; done
+          done
+          echo "RESULT $NF: $hung of 10 stops hung"
