@@ -75,19 +75,19 @@ jobs:
             # following every thread, attached before the stop.
             traced=no
             if [ $((i % 2)) -eq 1 ]; then
-              traced=yes; rm -f /tmp/st.*
-              sudo timeout 120 strace -ff -p $p -o /tmp/st >/dev/null 2>&1 &
-              for k in $(seq 20); do ls /tmp/st.$p >/dev/null 2>&1 && break; sleep 0.5; done
+              traced=yes; st=/tmp/st$i; sudo rm -f /tmp/st*
+              sudo timeout 120 strace -ff -p $p -o $st >/dev/null 2>&1 &
+              for k in $(seq 20); do ls $st.$p >/dev/null 2>&1 && break; sleep 0.5; done
               sleep 2
             fi
             t0=$(date +%s.%N)
             kubectl -n oai-cnti delete pod $pod --grace-period=60 --wait=false >/dev/null
             gone=""
             for k in $(seq 100); do [ -d /proc/$p ] || { gone=$(echo "$(date +%s.%N) - $t0" | bc); break; }; sleep 0.1; done
-            if [ -n "$gone" ]; then echo "iteration $i (traced=$traced): $pod nr-softmodem $p exited after ${gone}s$( [ $traced = yes ] && echo ", strace files $(ls /tmp/st.* 2>/dev/null | wc -l), lines $(cat /tmp/st.* 2>/dev/null | wc -l)")"; kubectl -n oai-cnti wait --for=delete pod/$pod --timeout=90s >/dev/null 2>&1; continue; fi
+            if [ -n "$gone" ]; then echo "iteration $i (traced=$traced): $pod nr-softmodem $p exited after ${gone}s$( [ $traced = yes ] && echo ", strace files $(ls /tmp/st$i.* 2>/dev/null | wc -l), lines $(sudo cat /tmp/st$i.* 2>/dev/null | wc -l)")"; kubectl -n oai-cnti wait --for=delete pod/$pod --timeout=90s >/dev/null 2>&1; continue; fi
             hung=$((hung+1))
             echo "::group::iteration $i (traced=$traced): $pod nr-softmodem $p STILL ALIVE 10 s after SIGTERM"
-            [ $traced = yes ] && echo "strace files $(ls /tmp/st.* | wc -l), lines $(cat /tmp/st.* | wc -l); per-thread lines:" && wc -l /tmp/st.* | sort -rn | head -8
+            [ $traced = yes ] && echo "strace files $(ls /tmp/st$i.* | wc -l), lines $(sudo cat /tmp/st$i.* | wc -l); per-thread lines:" && sudo wc -l /tmp/st$i.* | sort -rn | head -8
             echo "--- threads: tid comm state policy rtprio wchan"
             for t in /proc/$p/task/*; do
               tid=${t##*/}
