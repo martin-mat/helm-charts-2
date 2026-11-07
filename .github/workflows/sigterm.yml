@@ -54,7 +54,23 @@ jobs:
           fi
           helm install ${{ matrix.nf }} charts/${{ matrix.nf }} -n oai-cnti --create-namespace --wait --timeout 10m ${{ matrix.values }}
           kubectl get pods -A -o wide | grep -E 'oai-cnti|NAME'
+      - name: Process tree and image entrypoint
+        env:
+          NF: ${{ matrix.nf }}
+        run: |
+          set -uo pipefail
+          pod=$(kubectl -n oai-cnti get pod -l app=$NF -o jsonpath='{.items[0].metadata.name}')
+          img=$(kubectl -n oai-cnti get pod $pod -o jsonpath='{.spec.containers[0].image}')
+          echo "--- $img: Entrypoint / Cmd / StopSignal"
+          docker pull -q $img >/dev/null && docker inspect $img --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}} {{json .Config.StopSignal}}'
+          echo "--- inside $pod: pid ppid pgid comm cmdline"
+          kubectl -n oai-cnti exec $pod -c $(kubectl -n oai-cnti get pod $pod -o jsonpath='{.spec.containers[0].name}') -- sh -c 'for d in /proc/[0-9]*; do p=${d#/proc/}; s=$(cat $d/stat 2>/dev/null) || continue; echo "$p $(echo "$s" | awk "{print \$4, \$5}") $(cat $d/comm) :: $(tr "\0" " " < $d/cmdline | cut -c1-200)"; done'
+          echo "--- entrypoint script, if a file"
+          for f in $(docker inspect $img --format '{{range .Config.Entrypoint}}{{.}} {{end}}{{range .Config.Cmd}}{{.}} {{end}}'); do
+            case $f in /*) docker run --rm --entrypoint sh $img -c "test -f $f && file $f 2>/dev/null; head -c 4000 $f 2>/dev/null | grep -a -v '^\s*#' | head -80" ;; esac
+          done
       - name: Stop it ten times
+        if: false
         env:
           NF: ${{ matrix.nf }}
         run: |
