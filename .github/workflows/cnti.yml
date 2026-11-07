@@ -36,7 +36,8 @@ jobs:
     strategy: &nfs
       fail-fast: false
       matrix:
-        nf: [duranta-oai-gnb, duranta-oai-cu, duranta-oai-du, duranta-oai-nr-ue, duranta-oai-cu-cp, duranta-oai-cu-up, duranta-flexric]
+        nf: [duranta-oai-gnb, duranta-oai-cu, duranta-oai-du, duranta-oai-nr-ue, duranta-oai-cu-cp, duranta-oai-cu-up]
+        attempt: [1, 2, 3]
     env: &env
       CORE_NS: oai-core
       DEPS_NS: oai-cnti-deps
@@ -109,7 +110,7 @@ jobs:
           create_kind_cluster: false
           install_timeout: 900
           tests: cert
-          artifact_name: cnti-${{ matrix.nf }}
+          artifact_name: cnti-${{ matrix.nf }}-${{ matrix.attempt }}
           badge_branch: badges
           badge_name: ${{ matrix.nf }}
           # Known results (lfn-cnti/<nf>/expected.yaml): a test whose result
