@@ -36,7 +36,7 @@ jobs:
     strategy: &nfs
       fail-fast: false
       matrix:
-        nf: [duranta-oai-gnb, duranta-oai-cu, duranta-oai-du, duranta-oai-nr-ue, duranta-oai-cu-cp, duranta-oai-cu-up, duranta-flexric]
+        nf: [duranta-oai-nr-ue]
     env: &env
       CORE_NS: oai-core
       DEPS_NS: oai-cnti-deps
@@ -101,14 +101,25 @@ jobs:
           set -euo pipefail
           helm dependency update orchestration/oai-5g-core/oai-5g-basic >/dev/null
           helm install basic orchestration/oai-5g-core/oai-5g-basic -n "$CORE_NS" --create-namespace --wait --timeout 10m
-          dep() { helm install "$1" "charts/$2" -n "$DEPS_NS" --create-namespace --wait --timeout 10m --set config.amfHost="$AMF"; }
+          dep() { local r=$1 c=$2; shift 2; helm install "$r" "charts/$c" -n "$DEPS_NS" --create-namespace --wait --timeout 10m --set config.amfHost="$AMF" "$@"; }
           case "$NF" in
             duranta-oai-du)    dep cu duranta-oai-cu ;;
             duranta-oai-cu-up) dep cucp duranta-oai-cu-cp ;;
-            duranta-oai-nr-ue) dep gnb duranta-oai-gnb ;;
+            # Experiment: the gNB peer without SYS_NICE, so no real-time threads.
+            duranta-oai-nr-ue) dep gnb duranta-oai-gnb --set 'securityContext.capabilities.add={IPC_LOCK}' ;;
           esac
           kubectl get pods -n "$CORE_NS"; kubectl get pods -n "$DEPS_NS" 2>/dev/null || true
 
+      # Experiment: the real-time threads and the busiest threads on the nodes,
+      # every 30 s while the suite runs.
+      - name: Sampler
+        run: |
+          ( for i in $(seq 40); do
+              for n in cnti-testsuite-control-plane cnti-testsuite-worker cnti-testsuite-worker2; do
+                echo "== $(date +%T) $n load $(docker exec $n cat /proc/loadavg | cut -d' ' -f1-3)"
+                docker exec $n ps -eLo cls,rtprio,pcpu,comm --sort=-pcpu | awk 'NR==1 || $1=="FF" || $1=="RR" || NR<=6' | head -12
+              done; sleep 30
+            done ) > "$RUNNER_TEMP/sampler.log" 2>&1 &
       - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
         with:
           version: v2.4.1
@@ -119,6 +130,10 @@ jobs:
           artifact_name: cnti-${{ matrix.nf }}
           badge_branch: badges
           badge_name: ${{ matrix.nf }}
+
+      - name: Sampler log
+        if: always()
+        run: cat "$RUNNER_TEMP/sampler.log" || true
 
       - name: Diagnostics
         if: failure()
